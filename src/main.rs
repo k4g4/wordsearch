@@ -1,77 +1,73 @@
 // #![windows_subsystem = "windows"]
 
-use std::ops::Deref;
+use std::{iter, ops::Deref};
 
 use raylib::prelude::*;
 
 const FONT: &[u8] = include_bytes!("../font.ttf");
 const FONT_COUNT: usize = 3;
-const FONT_SIZES: [usize; FONT_COUNT] = [30, 45, 60];
+const FONT_SIZES: [i32; FONT_COUNT] = [30, 45, 60];
 
 type Fonts = [Font; FONT_COUNT];
-
-enum State {
-    Init,
-    Searching,
-}
-
-impl State {
-    fn toggle(&mut self) {
-        match self {
-            State::Init => *self = State::Searching,
-            State::Searching => *self = State::Init,
-        }
-    }
-}
 
 struct Draw<'handle> {
     handle: RaylibDrawHandle<'handle>,
     fonts: &'handle Fonts,
 }
 
-impl Draw<'_> {
-    fn small(&mut self, text: &str, position: impl Into<Vector2>, color: Color) {
+impl<'handle> Draw<'handle> {
+    fn draw_text(
+        mut self,
+        font_index: usize,
+        text: &str,
+        position: impl Into<Vector2>,
+        color: Color,
+    ) -> Self {
         self.handle.draw_text_ex(
-            &self.fonts[0],
+            &self.fonts[font_index],
             text,
             position.into(),
-            FONT_SIZES[0] as _,
+            FONT_SIZES[font_index] as _,
             2.0,
             color,
         );
+        self
     }
 
-    fn medium(&mut self, text: &str, position: impl Into<Vector2>, color: Color) {
-        self.handle.draw_text_ex(
-            &self.fonts[1],
-            text,
-            position.into(),
-            FONT_SIZES[1] as _,
-            2.0,
-            color,
-        );
+    fn small(self, text: &str, position: impl Into<Vector2>, color: Color) -> Self {
+        self.draw_text(0, text, position, color)
     }
 
-    fn large(&mut self, text: &str, position: impl Into<Vector2>, color: Color) {
-        self.handle.draw_text_ex(
-            &self.fonts[2],
-            text,
-            position.into(),
-            FONT_SIZES[2] as _,
-            2.0,
-            color,
-        );
+    fn medium(self, text: &str, position: impl Into<Vector2>, color: Color) -> Self {
+        self.draw_text(1, text, position, color)
+    }
+
+    fn large(self, text: &str, position: impl Into<Vector2>, color: Color) -> Self {
+        self.draw_text(2, text, position, color)
     }
 }
 
-struct Handle {
+impl Deref for Draw<'_> {
+    type Target = RaylibHandle;
+
+    fn deref(&self) -> &Self::Target {
+        &self.handle
+    }
+}
+
+struct Input {
+    #[allow(unused)]
+    pos: Vector2,
+    keys: Vec<KeyboardKey>,
+}
+
+struct Global {
     handle: RaylibHandle,
     thread: RaylibThread,
     fonts: Fonts,
-    state: State,
 }
 
-impl Handle {
+impl Global {
     fn draw(&mut self) -> Draw {
         let mut handle = self.handle.begin_drawing(&self.thread);
         handle.clear_background(Color::WHITE);
@@ -81,9 +77,16 @@ impl Handle {
             fonts: &self.fonts,
         }
     }
+
+    fn input(&mut self) -> Input {
+        Input {
+            pos: self.handle.get_mouse_position(),
+            keys: iter::from_fn(|| self.handle.get_key_pressed()).collect(),
+        }
+    }
 }
 
-impl Deref for Handle {
+impl Deref for Global {
     type Target = RaylibHandle;
 
     fn deref(&self) -> &Self::Target {
@@ -91,40 +94,59 @@ impl Deref for Handle {
     }
 }
 
-fn main() {
-    let mut handle = {
-        let (mut handle, thread) = init().size(600, 400).title("Word Search").build();
-        let fonts = FONT_SIZES.map(|font_size| {
-            handle
-                .load_font_from_memory(&thread, ".ttf", FONT, font_size as _, None)
-                .unwrap()
-        });
+#[derive(Clone, Default, Debug)]
+enum State {
+    #[default]
+    Init,
+    Searching,
+}
 
-        Handle {
-            handle,
-            thread,
-            fonts,
-            state: State::Init,
+impl State {
+    fn draw<'handle>(&self, draw: Draw<'handle>) -> Draw<'handle> {
+        match self {
+            State::Init => draw.medium("Press ENTER to begin", (10.0, 10.0), Color::BLACK),
+            State::Searching => draw.small("Small...", (10.0, 10.0), Color::BLACK).large(
+                "Large...",
+                (10.0, 20.0),
+                Color::BLACK,
+            ),
         }
-    };
+    }
 
-    while !handle.window_should_close() {
-        match handle.state {
+    fn update(&mut self, Input { pos: _, keys }: Input) {
+        match self {
             State::Init => {
-                let mut d = handle.draw();
-
-                d.medium("Press ENTER to begin", (10.0, 10.0), Color::BLACK);
+                if keys.contains(&KeyboardKey::KEY_ENTER) {
+                    *self = State::Searching;
+                }
             }
             State::Searching => {
-                let mut d = handle.draw();
-
-                d.small("Small...", (10.0, 10.0), Color::BLACK);
-                d.large("Large...", (10.0, 20.0), Color::BLACK);
+                if keys.contains(&KeyboardKey::KEY_ENTER) {
+                    *self = State::Init;
+                }
             }
         }
+    }
+}
 
-        if handle.is_key_pressed(KeyboardKey::KEY_ENTER) {
-            handle.state.toggle();
-        }
+fn main() {
+    let (mut handle, thread) = init().size(600, 400).title("Word Search").build();
+    handle.set_target_fps(60);
+    handle.set_trace_log(TraceLogLevel::LOG_ALL);
+    let fonts = FONT_SIZES.map(|font_size| {
+        handle
+            .load_font_from_memory(&thread, ".ttf", FONT, font_size, None)
+            .unwrap()
+    });
+    let mut global = Global {
+        handle,
+        thread,
+        fonts,
+    };
+    let mut state = State::default();
+
+    while !global.window_should_close() {
+        state.draw(global.draw());
+        state.update(global.input());
     }
 }
